@@ -1,0 +1,16 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - chmod +x ./gradlew
+  build:
+    commands:
+      - echo Build started on `date`
+      - ./gradlew clean shadowJar -x test
+  post_build:
+    commands:
+      - echo Build completed on `date`
+artifacts:
+  files:
+    - build/libs/metabus-splitter-all.jar

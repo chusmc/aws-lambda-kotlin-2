@@ -4,104 +4,106 @@ import com.amazonaws.services.lambda.runtime.Context
 import com.amazonaws.services.lambda.runtime.LambdaLogger
 import com.amazonaws.services.lambda.runtime.events.KinesisEvent
 import groovy.json.JsonOutput
+import org.apache.commons.jexl3.JexlContext
+import org.apache.commons.jexl3.JexlExpression
+import spock.lang.Shared
 import spock.lang.Specification
 
 import java.nio.ByteBuffer
 
 class RehashMetabusMessageSpec extends Specification {
+    def context
+    def logger
+
+    def setup() {
+        context = Mock(Context)
+        logger = Mock(LambdaLogger)
+        logger.log(_ as String) >> { s -> System.out.println(s) }
+    }
 
     def "When input is null then a null pointer is thrown"() {
         given:
-        def kinesis = Mock(AmazonKinesis)
-        def partitionKeyMap = { s -> [:] }
-        def lambdaClass = new RehashMetabusMessage(kinesis, partitionKeyMap)
+        def expressionsMap = [:]
+        def kinesisStreamsMap = { [:] }
+        def partitionKeyMap = { [:] }
+        def lambdaClass = new RehashMetabusMessage(expressionsMap, kinesisStreamsMap, partitionKeyMap)
 
         when:
-        lambdaClass.handleRequest(null, null)
+        lambdaClass.handleRequest(null, context)
 
         then:
         thrown NullPointerException
     }
 
-    def "When input contains a Kinesis record, that can't be deserialized to a valid Message, then the message is ignored and error is logged"() {
+    def "Given the expressions map is empty, and a record is processed, then the messages is ignored"() {
         given:
-        def kinesis = Mock(AmazonKinesis)
+        def expressionsMap = [:]
+        def kinesisStreamsMap = { [:] }
         def partitionKeyMap = { [:] }
-        def lambdaClass = new RehashMetabusMessage(kinesis, partitionKeyMap)
 
-        and:
-        def context = Mock(Context)
-        def logger = Mock(LambdaLogger)
-        context.getLogger() >> logger
+        def lambdaClass = new RehashMetabusMessage(expressionsMap, kinesisStreamsMap, partitionKeyMap)
 
         and:
         def inputEvent = new KinesisEvent()
-        inputEvent.setRecords([newRecord('noMessageData', 'messageId')])
+        inputEvent.setRecords([newRecord('1', '', '')])
 
         when:
         lambdaClass.handleRequest(inputEvent, context)
 
         then:
-        0 * kinesis.putRecords(_ as PutRecordsRequest)
-        1 * logger.log(_ as String) >> { string ->
-            System.out.println(string)
-        }
-    }
-
-    def "When input contains two Kinesis records, one valid and one that can't be deserialized to a valid Message, then one message is ignored and error is logged and another message is rewritten to the stream"() {
-        given:
-        def kinesis = Mock(AmazonKinesis)
-        def partitionKeyMap = { [:] }
-        def lambdaClass = new RehashMetabusMessage(kinesis, partitionKeyMap)
-
-        and:
-        def context = Mock(Context)
-        def logger = Mock(LambdaLogger)
-        context.getLogger() >> logger
-
-        and:
-        def inputEvent = new KinesisEvent()
-        inputEvent.setRecords([
-                newRecord('noMessageData', 'noPartitionValue'),
-                newRecord(JsonOutput.toJson([messageId:'messageId', timestamp:'2007-12-03T10:15:30+01:00', payloadInfo: 'payloadInfo', payload:'{}', tags:['tags']]), 'messageId')])
-
-        when:
-        lambdaClass.handleRequest(inputEvent, context)
-
-        then:
-        1 * kinesis.putRecords( { PutRecordsRequest request -> request.records[0].partitionKey == 'messageId' })
-        1 * logger.log(_ as String) >> { string ->
-            System.out.println(string)
-        }
-    }
-
-    def "When input contains a Kinesis record, that is a valid Message, and the partitionKey is mapped for the payloadInfo, then another message is rewritten to the stream with the new partition key"() {
-        given:
-        def kinesis = Mock(AmazonKinesis)
-        def partitionKeyMap = { ['payloadInfo': '$.payloadId'] }
-        def lambdaClass = new RehashMetabusMessage(kinesis, partitionKeyMap)
-
-        and:
-        def context = Mock(Context)
-        def logger = Mock(LambdaLogger)
-        context.getLogger() >> logger
-
-        and:
-        def inputEvent = new KinesisEvent()
-        inputEvent.setRecords([
-                newRecord(JsonOutput.toJson([messageId:'messageId', timestamp:'2007-12-03T10:15:30+01:00', payloadInfo: 'payloadInfo', payload:'{"payloadId": "value"}', tags:['tags']]), 'messageId')])
-
-        when:
-        lambdaClass.handleRequest(inputEvent, context)
-
-        then:
-        1 * kinesis.putRecords( { PutRecordsRequest request -> request.records[0].partitionKey == 'value' })
         0 * logger.log(_ as String)
     }
 
-    private def newRecord(String data, String partitionKey) {
+    def "when a record is processed, but all the expressions in the expressionMap return false, then the messages is ignored"() {
+        given:
+        def expression = Mock(JexlExpression)
+        expression.evaluate(_ as JexlContext) >> false
+        def expressionsMap = [(expression): ""]
+        def kinesisStreamsMap = { [:] }
+        def partitionKeyMap = { [:] }
+
+        def lambdaClass = new RehashMetabusMessage(expressionsMap, kinesisStreamsMap, partitionKeyMap)
+
+        and:
+        def inputEvent = new KinesisEvent()
+        inputEvent.setRecords([
+                newRecord('1', JsonOutput.toJson([payloadInfo: 'payloadInfo', payload:'{"payloadId": "value"}', tags:['tags']]), 'messageId')])
+
+        when:
+        lambdaClass.handleRequest(inputEvent, context)
+
+        then:
+        0 * logger.log(_ as String)
+    }
+
+
+
+    def "when a record is processed, and an expressions in the expressionMap return false, then the messages is ignored"() {
+        given:
+        def expression = Mock(JexlExpression)
+        expression.evaluate(_ as JexlContext) >> false
+        def expressionsMap = [(expression): ""]
+        def kinesisStreamsMap = { [:] }
+        def partitionKeyMap = { [:] }
+
+        def lambdaClass = new RehashMetabusMessage(expressionsMap, kinesisStreamsMap, partitionKeyMap)
+
+        and:
+        def inputEvent = new KinesisEvent()
+        inputEvent.setRecords([
+                newRecord('1', JsonOutput.toJson([payloadInfo: 'payloadInfo', payload:'{"payloadId": "value"}', tags:['tags']]), 'messageId')])
+
+        when:
+        lambdaClass.handleRequest(inputEvent, context)
+
+        then:
+        0 * logger.log(_ as String)
+    }
+
+    private def newRecord(String sequenceNumber, String data, String partitionKey) {
         def kinesisRecord = new KinesisEvent.Record()
         kinesisRecord.setData(ByteBuffer.wrap(data.bytes))
+        kinesisRecord.setSequenceNumber(sequenceNumber)
         kinesisRecord.setPartitionKey(partitionKey)
 
         def kinesisEventRecord = new  KinesisEvent.KinesisEventRecord()
