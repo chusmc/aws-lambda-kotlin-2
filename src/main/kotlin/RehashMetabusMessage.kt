@@ -7,8 +7,10 @@ import com.amazonaws.services.lambda.runtime.RequestHandler
 import com.amazonaws.services.lambda.runtime.events.KinesisEvent
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.jacksonTypeRef
+import com.jayway.jsonpath.Configuration
 
 import com.jayway.jsonpath.JsonPath
+import com.jayway.jsonpath.Option
 import org.apache.commons.jexl3.JexlBuilder
 import org.apache.commons.jexl3.JexlExpression
 import org.apache.commons.jexl3.MapContext
@@ -16,7 +18,6 @@ import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
 import reactor.util.function.Tuple2
 import reactor.util.function.Tuples
-import java.nio.channels.Channels
 import java.time.Duration
 import java.time.temporal.ChronoUnit
 import java.util.function.BiFunction
@@ -37,7 +38,10 @@ class RehashMetabusMessage @Inject constructor(
 
         @JvmStatic
         val EXPRESSION_PROPERTIES_PATH = JsonPath.compile("$.['${TAGS_PROPERTY}','${AGENT_PROPERTY }']")
+        @JvmStatic
         val PAYLOADINFO_PATH = JsonPath.compile("$.${PAYLOADINFO_PROPERTY}")
+        @JvmStatic
+        val JSONPATH_CONFIGURATION = Configuration.defaultConfiguration().addOptions(Option.SUPPRESS_EXCEPTIONS)
     }
 
     val partitionKeyMap: Map<String, Map<String, String>> by lazy {
@@ -59,24 +63,21 @@ class RehashMetabusMessage @Inject constructor(
                 }
 
         val putRecordsRequestsGroupedFlux = filteredMessageFlux
-                .flatMap { tuple ->
-                    try {
-                        val record = tuple.t1
-                        val streamName = tuple.t2
-                        context.logger.log("Creating PutRecordRequestEntry for record ${record.sequenceNumber}")
-                        Mono.just(Tuples.of(createPutRecordRequestEntry(record, streamName), streamName))
-                    } catch(e: Exception) {
-                        context.logger.log(e.toString())
-                        Mono.empty<Tuple2<PutRecordsRequestEntry, String>>()
-                    }
+                .map { tuple ->
+                    val record = tuple.t1
+                    val streamName = tuple.t2
+                    context.logger.log("Creating PutRecordRequestEntry for record ${record.sequenceNumber}")
+                    Tuples.of(createPutRecordRequestEntry(record, streamName), streamName)
                 }.groupBy ({ tuple -> tuple.t2 }, { tuple ->tuple.t1 })
 
 
         putRecordsRequestsGroupedFlux.parallel().subscribe{ groupedFlux ->
             val kinesisStreamClient = outputKinesisStreamMap[groupedFlux.key()]
-            groupedFlux.bufferTimeout(20, Duration.of(1, ChronoUnit.SECONDS)).subscribe { putRecordEntries ->
-                context.logger.log("Trying to stream to ${groupedFlux.key()}, ${putRecordEntries.size} records")
-                kinesisStreamClient?.putRecords(PutRecordsRequest().withRecords(putRecordEntries))
+            if (kinesisStreamClient != null) {
+                groupedFlux.bufferTimeout(20, Duration.of(1, ChronoUnit.SECONDS)).subscribe { putRecordEntries ->
+                    context.logger.log("Trying to stream to ${groupedFlux.key()}, ${putRecordEntries.size} records")
+                    kinesisStreamClient.putRecords(PutRecordsRequest().withRecords(putRecordEntries))
+                }
             }
         }
 
@@ -86,7 +87,7 @@ class RehashMetabusMessage @Inject constructor(
     private fun entryMatchesRecord(expression: JexlExpression, record: Record): Boolean =
             try {
                 expression.evaluate(MapContext(
-                    EXPRESSION_PROPERTIES_PATH.read(String(record.data.array())) as Map<String, String>)) as Boolean
+                    EXPRESSION_PROPERTIES_PATH.read(String(record.data.array()), JSONPATH_CONFIGURATION) as Map<String, String>)) as Boolean
             } catch (e: Exception) {
                 false
             }
@@ -97,11 +98,11 @@ class RehashMetabusMessage @Inject constructor(
                     .flatMap { filterEntry -> filterEntry.value.stream() }.collect(Collectors.toList<String>())
 
     private fun createPutRecordRequestEntry(record: Record, streamName: String): PutRecordsRequestEntry {
-        val payloadInfo = PAYLOADINFO_PATH.read(String(record.data.array())) as String
+        val payloadInfo = PAYLOADINFO_PATH.read(String(record.data.array()), JSONPATH_CONFIGURATION) as String?
 
         val partionKeyJsonPath = partitionKeyMap[streamName]?.get(payloadInfo)
         val partitionKey = if (partionKeyJsonPath != null)
-            JsonPath.read(record, partionKeyJsonPath) else record.partitionKey
+            JsonPath.using(JSONPATH_CONFIGURATION).parse(record).read(partionKeyJsonPath) else record.partitionKey
 
         return PutRecordsRequestEntry().withData(record.data).withPartitionKey(partitionKey)
     }
