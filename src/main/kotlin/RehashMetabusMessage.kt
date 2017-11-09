@@ -66,15 +66,16 @@ class RehashMetabusMessage @Inject constructor(
                 .map { tuple ->
                     val record = tuple.t1
                     val streamName = tuple.t2
-                    context.logger.log("Creating PutRecordRequestEntry for record ${record.sequenceNumber}")
-                    Tuples.of(createPutRecordRequestEntry(record, streamName), streamName)
+                    val putRecordRequestEntry = createPutRecordRequestEntry(record, streamName)
+                    context.logger.log("Created PutRecordRequestEntry for record ${record.sequenceNumber} for stream ${streamName} with partitionKey ${putRecordRequestEntry.partitionKey}")
+                    Tuples.of(putRecordRequestEntry, streamName)
                 }.groupBy ({ tuple -> tuple.t2 }, { tuple ->tuple.t1 })
 
 
         putRecordsRequestsGroupedFlux.parallel().subscribe{ groupedFlux ->
             val kinesisStreamClient = outputKinesisStreamMap[groupedFlux.key()]
             if (kinesisStreamClient != null) {
-                groupedFlux.bufferTimeout(20, Duration.of(1, ChronoUnit.SECONDS)).subscribe { putRecordEntries ->
+                groupedFlux.bufferTimeout(Math.max(input.records.size, 500), Duration.of(1, ChronoUnit.SECONDS)).subscribe { putRecordEntries ->
                     context.logger.log("Trying to stream to ${groupedFlux.key()}, ${putRecordEntries.size} records")
                     kinesisStreamClient.putRecords(PutRecordsRequest().withRecords(putRecordEntries))
                 }
@@ -101,8 +102,10 @@ class RehashMetabusMessage @Inject constructor(
         val payloadInfo = PAYLOADINFO_PATH.read(String(record.data.array()), JSONPATH_CONFIGURATION) as String?
 
         val partionKeyJsonPath = partitionKeyMap[streamName]?.get(payloadInfo)
-        val partitionKey = if (partionKeyJsonPath != null)
-            JsonPath.using(JSONPATH_CONFIGURATION).parse(record).read(partionKeyJsonPath) else record.partitionKey
+        val partitionKey =
+                if (partionKeyJsonPath != null)
+                    JsonPath.using(JSONPATH_CONFIGURATION).parse(String(record.data.array())).read(partionKeyJsonPath) ?: record.partitionKey
+                else record.partitionKey
 
         return PutRecordsRequestEntry().withData(record.data).withPartitionKey(partitionKey)
     }

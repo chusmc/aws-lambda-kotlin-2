@@ -163,7 +163,7 @@ class RehashMetabusMessageSpec extends Specification {
         def expressionsMap = [(expression): ["configuredStream"]]
         def kinesisClient = Mock(AmazonKinesis)
         def kinesisStreamsMap = { ["configuredStream": kinesisClient] }
-        def partitionKeyMap = { ["configuredStream":["payloadInfo":"\$.payloadId"]] }
+        def partitionKeyMap = { ["configuredStream":["payloadInfo":"\$.payload.payloadId"]] }
 
         def lambdaClass = new RehashMetabusMessage(expressionsMap, kinesisStreamsMap, partitionKeyMap)
 
