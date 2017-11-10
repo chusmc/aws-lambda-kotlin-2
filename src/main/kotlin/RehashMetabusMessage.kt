@@ -15,13 +15,17 @@ import org.apache.commons.jexl3.JexlBuilder
 import org.apache.commons.jexl3.JexlExpression
 import org.apache.commons.jexl3.MapContext
 import reactor.core.publisher.Flux
+import reactor.core.publisher.GroupedFlux
 import reactor.core.publisher.Mono
+import reactor.core.scheduler.Schedulers
 import reactor.util.function.Tuple2
 import reactor.util.function.Tuples
 import java.time.Duration
 import java.time.temporal.ChronoUnit
+import java.util.concurrent.CountDownLatch
 import java.util.function.BiFunction
 import java.util.stream.Collectors
+import java.util.stream.StreamSupport
 import javax.inject.Inject
 
 class RehashMetabusMessage @Inject constructor(
@@ -53,32 +57,33 @@ class RehashMetabusMessage @Inject constructor(
     }
 
     override fun handleRequest(input: KinesisEvent?, context: Context): String {
-        val filteredMessageFlux = Flux.fromIterable(input!!.records)
+        val messageToStreamFlux = Flux.fromIterable(input!!.records)
                 .map { recordEvent -> recordEvent.kinesis }
                 .flatMap { record ->
                     Flux.combineLatest(
-                            Flux.just(record),
+                            Mono.just(record),
                             Flux.fromIterable(selectOutputStreams(record)),
-                            BiFunction<Record, String, Tuple2<Record, String>> { record, stream -> Tuples.of(record, stream) })
+                            BiFunction<Record, String, Tuple2<Record, String>> { r, s -> Tuples.of(r, s) })
                 }
 
-        val putRecordsRequestsGroupedFlux = filteredMessageFlux
-                .map { tuple ->
-                    val record = tuple.t1
-                    val streamName = tuple.t2
-                    val putRecordRequestEntry = createPutRecordRequestEntry(record, streamName)
-                    context.logger.log("Created PutRecordRequestEntry for record ${record.sequenceNumber} for stream ${streamName} with partitionKey ${putRecordRequestEntry.partitionKey}")
-                    Tuples.of(putRecordRequestEntry, streamName)
-                }.groupBy ({ tuple -> tuple.t2 }, { tuple ->tuple.t1 })
+        val putRecordToStreamFlux = messageToStreamFlux.map { tuple ->
+            val record = tuple.t1
+            val streamName = tuple.t2
+            val putRecordRequestEntry = createPutRecordRequestEntry(record, streamName)
+            context.logger.log("Created PutRecordRequestEntry for record ${record.sequenceNumber} for stream ${streamName} with partitionKey = ${putRecordRequestEntry.partitionKey}")
+            Tuples.of(putRecordRequestEntry, streamName)
+        }
 
+        val groupedByStreamFluxList = putRecordToStreamFlux
+                .groupBy ({ tuple -> tuple.t2 }, { tuple ->tuple.t1 })
+                .filter{ group -> outputKinesisStreamMap.containsKey(group.key() as String)}
+                .reduce(mutableListOf<GroupedFlux<String, PutRecordsRequestEntry>>(),  { l,e -> l.add(e); l }).block()
 
-        putRecordsRequestsGroupedFlux.parallel().subscribe{ groupedFlux ->
-            val kinesisStreamClient = outputKinesisStreamMap[groupedFlux.key()]
-            if (kinesisStreamClient != null) {
-                groupedFlux.bufferTimeout(Math.max(input.records.size, 500), Duration.of(1, ChronoUnit.SECONDS)).subscribe { putRecordEntries ->
-                    context.logger.log("Trying to stream to ${groupedFlux.key()}, ${putRecordEntries.size} records")
-                    kinesisStreamClient.putRecords(PutRecordsRequest().withRecords(putRecordEntries))
-                }
+        groupedByStreamFluxList!!.parallelStream().forEach { groupedFlux ->
+            val kinesisStreamClient = outputKinesisStreamMap[groupedFlux.key() as String] as AmazonKinesis
+            groupedFlux.bufferTimeout(50, Duration.of(1, ChronoUnit.SECONDS)).subscribe { putRecordEntries ->
+                context.logger.log("${Thread.currentThread().name}:${System.currentTimeMillis()} -> Trying to stream to ${groupedFlux.key()}, ${putRecordEntries.size} records")
+                kinesisStreamClient.putRecords(PutRecordsRequest().withRecords(putRecordEntries))
             }
         }
 

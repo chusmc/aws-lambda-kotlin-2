@@ -67,7 +67,7 @@ class RehashMetabusMessageSpec extends Specification {
         and:
         def inputEvent = new KinesisEvent()
         inputEvent.setRecords([
-                newRecord('1', JsonOutput.toJson([payloadInfo: 'payloadInfo', payload:'{"payloadId": "value"}', tags:['tags']]), 'messageId')])
+                newRecord('1', JsonOutput.toJson([payloadInfo: 'testPayloadInfo', payload:[payloadId: 'value'], tags:['tags']]), 'messageId')])
 
         when:
         lambdaClass.handleRequest(inputEvent, context)
@@ -80,9 +80,9 @@ class RehashMetabusMessageSpec extends Specification {
         given:
         def expression = Mock(JexlExpression)
         expression.evaluate(_ as JexlContext) >> true
-        def expressionsMap = [(expression): ["unknownStream"]]
+        def expressionsMap = [(expression): ['unknownStream']]
         def kinesisClient = Mock(AmazonKinesis)
-        def kinesisStreamsMap = { ["configuredStream": kinesisClient] }
+        def kinesisStreamsMap = { ['testOutputStream': kinesisClient] }
         def partitionKeyMap = { [:] }
 
         def lambdaClass = new RehashMetabusMessage(expressionsMap, kinesisStreamsMap, partitionKeyMap)
@@ -90,7 +90,7 @@ class RehashMetabusMessageSpec extends Specification {
         and:
         def inputEvent = new KinesisEvent()
         inputEvent.setRecords([
-                newRecord('1', JsonOutput.toJson([payloadInfo: 'payloadInfo', payload:'{"payloadId": "value"}', tags:['tags']]), 'messageId')])
+                newRecord('1', JsonOutput.toJson([payloadInfo: 'testPayloadInfo', payload:[payloadId: 'value'], tags:['tags']]), 'messageId')])
 
         when:
         lambdaClass.handleRequest(inputEvent, context)
@@ -106,9 +106,9 @@ class RehashMetabusMessageSpec extends Specification {
         given:
         def expression = Mock(JexlExpression)
         expression.evaluate(_ as JexlContext) >> true
-        def expressionsMap = [(expression): ["configuredStream"]]
+        def expressionsMap = [(expression): ['testOutputStream']]
         def kinesisClient = Mock(AmazonKinesis)
-        def kinesisStreamsMap = { ["configuredStream": kinesisClient] }
+        def kinesisStreamsMap = { ['testOutputStream': kinesisClient] }
         def partitionKeyMap = { [:] }
 
         def lambdaClass = new RehashMetabusMessage(expressionsMap, kinesisStreamsMap, partitionKeyMap)
@@ -116,7 +116,7 @@ class RehashMetabusMessageSpec extends Specification {
         and:
         def inputEvent = new KinesisEvent()
         inputEvent.setRecords([
-                newRecord('1', JsonOutput.toJson([payloadInfo: 'payloadInfo', payload:'{"payloadId": "value"}', tags:['tags']]), 'messageId')])
+                newRecord('1', JsonOutput.toJson([payloadInfo: 'testPayloadInfo', payload:[payloadId:'value'], tags:['tags']]), 'messageId')])
 
         when:
         lambdaClass.handleRequest(inputEvent, context)
@@ -125,17 +125,20 @@ class RehashMetabusMessageSpec extends Specification {
         2 * logger.log(_ as String) >> {
             s -> System.out.println(s)
         }
-        1 * kinesisClient.putRecords(_ as PutRecordsRequest)
+        1 * kinesisClient.putRecords(_ as PutRecordsRequest) >> { sleep(100) }
     }
 
     def "when a record is processed, and an expressions matches the criteria for more than one streams that are configured, then the message is outputed to both"() {
         given:
         def expression = Mock(JexlExpression)
         expression.evaluate(_ as JexlContext) >> true
-        def expressionsMap = [(expression): ["configuredStream1", "configuredStream2"]]
+        def expressionsMap = [(expression): ['testOutputStream1', 'testOutputStream2', 'testOutputStream3', 'testOutputStream4']]
         def kinesisClient1 = Mock(AmazonKinesis)
         def kinesisClient2 = Mock(AmazonKinesis)
-        def kinesisStreamsMap = { ["configuredStream1": kinesisClient1, "configuredStream2": kinesisClient2] }
+        def kinesisClient3 = Mock(AmazonKinesis)
+        def kinesisClient4 = Mock(AmazonKinesis)
+
+        def kinesisStreamsMap = { ['testOutputStream1': kinesisClient1, 'testOutputStream2': kinesisClient2, 'testOutputStream3': kinesisClient3, 'testOutputStream4': kinesisClient4] }
         def partitionKeyMap = { [:] }
 
         def lambdaClass = new RehashMetabusMessage(expressionsMap, kinesisStreamsMap, partitionKeyMap)
@@ -143,34 +146,40 @@ class RehashMetabusMessageSpec extends Specification {
         and:
         def inputEvent = new KinesisEvent()
         inputEvent.setRecords([
-                newRecord('1', JsonOutput.toJson([paylodInfo: 'payloadInfo', payload:'{"payloadId": "value"}', tags:['tags']]), 'messageId')])
+                newRecord('1', JsonOutput.toJson([payloadInfo: 'testPayloadInfo', payload:[payloadId: 'value'], tags:['tags']]), 'messageId')])
 
         when:
         lambdaClass.handleRequest(inputEvent, context)
 
         then:
-        4 * logger.log(_ as String) >> {
+        true
+
+        8 * logger.log(_ as String) >> {
             s -> System.out.println(s)
         }
-        1 * kinesisClient1.putRecords(_ as PutRecordsRequest)
-        1 * kinesisClient2.putRecords(_ as PutRecordsRequest)
+
+        1 * kinesisClient1.putRecords(_ as PutRecordsRequest) >> { sleep(100) }
+        1 * kinesisClient2.putRecords(_ as PutRecordsRequest) >> { sleep(100) }
+        1 * kinesisClient3.putRecords(_ as PutRecordsRequest) >> { sleep(100) }
+        1 * kinesisClient4.putRecords(_ as PutRecordsRequest) >> { sleep(100) }
+
     }
 
     def "when a record is processed, and an expressions matches the criteria for a stream that is configured, and the  then the message is outputed"() {
         given:
         def expression = Mock(JexlExpression)
         expression.evaluate(_ as JexlContext) >> true
-        def expressionsMap = [(expression): ["configuredStream"]]
+        def expressionsMap = [(expression): ['testOutputStream']]
         def kinesisClient = Mock(AmazonKinesis)
-        def kinesisStreamsMap = { ["configuredStream": kinesisClient] }
-        def partitionKeyMap = { ["configuredStream":["payloadInfo":"\$.payload.payloadId"]] }
+        def kinesisStreamsMap = { ['testOutputStream': kinesisClient] }
+        def partitionKeyMap = { ['testOutputStream':['testPayloadInfo':'$.payload.payloadId']] }
 
         def lambdaClass = new RehashMetabusMessage(expressionsMap, kinesisStreamsMap, partitionKeyMap)
 
         and:
         def inputEvent = new KinesisEvent()
         inputEvent.setRecords([
-                newRecord('1', JsonOutput.toJson([payloadInfo: 'payloadInfo', payload:'{"payloadId": "value"}', tags:['tags']]), 'messageId')])
+                newRecord('1', JsonOutput.toJson([payloadInfo: 'testPayloadInfo', payload:[payloadId: 'value'], tags:['tags']]), 'messageId')])
 
         when:
         lambdaClass.handleRequest(inputEvent, context)
@@ -179,7 +188,7 @@ class RehashMetabusMessageSpec extends Specification {
         2 * logger.log(_ as String) >> {
             s -> System.out.println(s)
         }
-        1 * kinesisClient.putRecords(_ as PutRecordsRequest)
+        1 * kinesisClient.putRecords({PutRecordsRequest r -> r.records[0].partitionKey == 'value'})
     }
 
     private def newRecord(String sequenceNumber, String data, String partitionKey) {
