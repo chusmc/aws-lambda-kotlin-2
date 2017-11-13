@@ -1,11 +1,10 @@
 # kinesis-stream-multiplexer
 
-https://metapack.atlassian.net/wiki/spaces/MID/pages/172360479/Metabus+splitting
-
 The Kinesis stream multiplexer lambda, its a serverless function that filters and rehashes Kinesis events to other Kinesis streams, based on some configuration
 
+![Screenshot](diagram.png)
 
-### Record data
+### Record data format
 In order to be able to filter the events, the event data should be a json that contain either a "tags" property with a list of strings, and or an "agent" property.
 Also, to be able to map the partitionKey value, a payloadInfo property is expected
 
