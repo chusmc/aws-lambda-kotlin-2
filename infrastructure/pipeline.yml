@@ -1,0 +1,225 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: CD pipeline for my Lambda project
+
+
+Parameters:
+    
+    ProjectName: 
+        Description: This will be used to name the pipeline and build resources
+        Type: String
+        AllowedPattern: '[A-Za-z0-9-]+'
+        Default: midas-lambda-project
+    
+    ArtifactsBucket:
+        Description: An existing S3 bucket within this AWS account
+        Type: String
+        Default: team-midas
+
+    GitHubOAuthToken: 
+        Description: Create a token with 'repo' and 'admin:repo_hook' permissions here https://github.com/settings/tokens
+        Type: String
+
+    GitHubUser:
+        Description: Enter GitHub username of the repository owner
+        Type: String
+
+    GitHubRepository:
+        Description: Enter the repository name that should be monitored for changes
+        Type: String
+        Default: aws-lambda-kotlin
+
+    GitHubBranch:
+        Description: Enter the GitHub branch to monitored
+        Type: String
+        Default: master
+
+Metadata:
+
+    AWS::CloudFormation::Interface:
+        ParameterGroups:
+            - 
+                Label: 
+                    default: Application Configuration
+                Parameters:
+                    - ApplicationName
+                    - ArtifactsBucket
+            - 
+                Label:
+                    default: GitHub Configuration
+                Parameters:
+                    - GitHubOAuthToken
+                    - GitHubUser
+                    - GitHubRepository
+                    - GitHubBranch
+            
+        ParameterLabels:
+            ApplicationName: 
+                default: Application Name
+            ArtifactsBucket: 
+                default: CodePipeline S3 Bucket
+            GitHubRepository: 
+                default: Repository Name
+            GitHubUser: 
+                default: Repository Owner
+            GitHubBranch: 
+                default: Repository Branch
+            GitHubOAuthToken: 
+                default: OAuth2 Token
+
+
+Resources:
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    DependsOn: CloudFormationRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+      Policies:
+        - PolicyName: ServiceRole
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: CloudWatchWriteLogsPolicy
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Sid: CodeCommitPullPolicy
+                Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                Resource: '*'
+              - Sid: S3GetObjectPolicy
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: '*'
+              - Sid: S3PutObjectPolicy
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: '*'
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    DependsOn: CloudFormationRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CloudFormationRole
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/java:openjdk-8
+        Type: LINUX_CONTAINER
+      Name: !Sub '${ProjectName}'
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 5 # must be between 5 minutes and 8 hours
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactsBucket
+      Name: !Sub '${ProjectName}'
+      RestartExecutionOnUpdate: true
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHub
+              ActionTypeId:
+                  Category: Source
+                  Owner: ThirdParty
+                  Version: 1
+                  Provider: GitHub
+              OutputArtifacts:
+                  -  Name: SourceOutput
+              Configuration:
+                  Owner: !Ref GitHubUser
+                  Repo: !Ref GitHubRepository
+                  Branch: !Ref GitHubBranch
+                  OAuthToken: !Ref GitHubOAuthToken
+        - Name: Build
+          Actions:
+            - Name: BuildAndTest
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+        - Name: LambdaDeploy
+          Actions:
+            - Name: CreateUpdateLambda
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_IAM
+                RoleArn: !GetAtt CloudFormationRole.Arn
+                StackName: !Sub '${ProjectName}-app'
+                TemplatePath: SourceOutput::infrastructure/lambda.yml
+                ParameterOverrides: '{"DeploymentPackageKey": {"Fn::GetArtifactAtt": ["BuildOutput", "ObjectKey"]}}'
+              InputArtifacts:
+                - Name: SourceOutput
+                - Name: BuildOutput
+
+Outputs:
+
+  ArtifactsBucket:
+    Description: S3 bucket holding all the OutputArtifacts of any pipeline stage
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: 'MidasPipelineArtifactsBucket'
+

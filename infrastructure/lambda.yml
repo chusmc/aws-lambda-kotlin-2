@@ -1,10 +1,7 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: My Lambda function
+Description: Midas - Count line on S3 files
 
 Parameters:
-  CapitalizedProjectName:
-    Type: String
-    Default: MyLambdaProject
   DeploymentPackageKey:
     Type: String
     Description: An S3 object key pointing of a ZIP file, an archive of everything that is needed to run the Lambda function. It is the output of the Build stage of the pipeline.
@@ -30,13 +27,30 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       Code:
-        S3Bucket:
-          'Fn::ImportValue': !Sub '${CapitalizedProjectName}PipelineArtifactsBucket'
+        S3Bucket: {"Fn::ImportValue": "MidasPipelineArtifactsBucket"}
         S3Key: !Ref DeploymentPackageKey
-      FunctionName: my-lambda-function
-      Handler: main.handler
+      FunctionName: MidasCountLinesOnS3Files
+      Handler: CountLinesOnS3Files.handleRequest
+      Timeout: 20
       Role: !GetAtt LambdaRunnerRole.Arn
-      Runtime: python2.7
+      Runtime: java8
+
+  InputBucket: 
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: team-midas
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: { "Fn::GetAtt" : ["LambdaFunction", "Arn"] }
+            Filter: 
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: test-lambda-file
+                  - Name: suffix
+                    Value: .txt
+
 
 Outputs:
   LambdaFunction:
